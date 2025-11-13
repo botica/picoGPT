@@ -1,0 +1,744 @@
+===============================================================================
+                    PICOGPT LINE-BY-LINE DOCUMENTATION
+      A Guide for Programmers with Minimal Machine Learning Experience
+===============================================================================
+
+OVERVIEW
+--------
+picoGPT is a minimal implementation of GPT-2 (Generative Pre-trained Transformer 2)
+in pure NumPy. This implementation uses PRE-TRAINED weights from OpenAI's GPT-2 model
+to generate text. It does NOT include training code - it only performs inference
+(text generation) using weights that were already trained by OpenAI.
+
+TRAINING DATA & MODEL SOURCE
+-----------------------------
+- This code DOES NOT train a model from scratch
+- It downloads and uses PRETRAINED model weights from OpenAI's GPT-2
+- The original GPT-2 was trained by OpenAI on a dataset called WebText
+- WebText contains ~40GB of text from 8 million web pages (outbound links from Reddit)
+- The training was done by OpenAI, not by this code
+- Model sizes available: 124M, 355M, 774M, or 1558M parameters
+- Files are downloaded from: https://openaipublic.blob.core.windows.net/gpt-2/models/
+
+WHAT IS GPT-2?
+--------------
+GPT-2 is a language model that predicts the next word (token) in a sequence.
+It was trained to predict the next word in billions of sentences from the internet.
+After training, it can generate coherent text by repeatedly predicting the next word.
+
+ARCHITECTURE: The Transformer
+------------------------------
+GPT-2 uses the "Transformer" architecture, which consists of:
+1. Token Embeddings: Converting words to numbers (vectors)
+2. Positional Embeddings: Encoding the position of each word
+3. Transformer Blocks: Processing the sequence (repeated N times)
+4. Output Projection: Converting back to word predictions
+
+Each Transformer Block contains:
+- Multi-Head Attention: Learns relationships between words
+- Feed-Forward Network: Additional processing
+- Layer Normalization: Stabilizes training/inference
+
+===============================================================================
+                         FILE-BY-FILE BREAKDOWN
+===============================================================================
+
+FILES IN THIS PROJECT:
+----------------------
+1. encoder.py - Tokenizer (converts text to numbers and back)
+2. utils.py - Downloads model weights and loads them
+3. gpt2.py - Main implementation (readable version)
+4. gpt2_pico.py - Condensed version (same logic, fewer lines)
+
+We'll focus on gpt2.py as it's more readable and well-commented.
+
+===============================================================================
+                      LINE-BY-LINE WALKTHROUGH: gpt2.py
+===============================================================================
+
+LINES 1-2: IMPORTS
+------------------
+import numpy as np
+
+- NumPy is used for all array/matrix operations
+- The entire model runs in pure NumPy (no PyTorch or TensorFlow for inference)
+
+
+LINES 4-5: GELU ACTIVATION FUNCTION
+------------------------------------
+def gelu(x):
+    return 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))
+
+WHAT IT DOES:
+- GELU (Gaussian Error Linear Unit) is an activation function
+- Activation functions introduce non-linearity (let the model learn complex patterns)
+- Think of it as a smooth version of ReLU (Rectified Linear Unit)
+- For positive values, GELU keeps them mostly as-is
+- For negative values, GELU suppresses them (but not to zero like ReLU)
+- The specific formula approximates a Gaussian cumulative distribution
+
+WHY IT MATTERS:
+- Without activation functions, stacking layers would be pointless (just linear math)
+- GELU allows the model to learn complex, non-linear relationships in language
+
+
+LINES 8-10: SOFTMAX FUNCTION
+-----------------------------
+def softmax(x):
+    exp_x = np.exp(x - np.max(x, axis=-1, keepdims=True))
+    return exp_x / np.sum(exp_x, axis=-1, keepdims=True)
+
+WHAT IT DOES:
+- Converts a vector of numbers into a probability distribution
+- Output values sum to 1.0 and are all between 0 and 1
+- Larger input values become larger probabilities
+
+EXAMPLE:
+- Input: [2.0, 1.0, 0.1]
+- Output: [0.659, 0.242, 0.099] (approximately)
+- Notice they sum to 1.0
+
+WHY IT MATTERS:
+- Used in attention mechanism to determine how much focus to put on each word
+- Used to convert final outputs (logits) into word probabilities
+
+TECHNICAL NOTE:
+- We subtract np.max(x) for numerical stability (prevents overflow in exp)
+
+
+LINES 13-17: LAYER NORMALIZATION
+---------------------------------
+def layer_norm(x, g, b, eps: float = 1e-5):
+    mean = np.mean(x, axis=-1, keepdims=True)
+    variance = np.var(x, axis=-1, keepdims=True)
+    x = (x - mean) / np.sqrt(variance + eps)  # normalize x to have mean=0 and var=1 over last axis
+    return g * x + b  # scale and offset with gamma/beta params
+
+WHAT IT DOES:
+- Normalizes the values in a layer to have mean=0 and variance=1
+- Then scales by learnable parameter 'g' (gamma) and shifts by 'b' (beta)
+- 'eps' is a tiny number (0.00001) to prevent division by zero
+
+WHY IT MATTERS:
+- Stabilizes the values flowing through the network
+- Makes training faster and more stable
+- Helps prevent vanishing/exploding gradients
+
+INTUITION:
+- Like standardizing test scores: convert raw scores to z-scores
+- Then allow the model to learn the "right" scale and offset for each layer
+
+
+LINES 20-21: LINEAR TRANSFORMATION
+-----------------------------------
+def linear(x, w, b):  # [m, in], [in, out], [out] -> [m, out]
+    return x @ w + b
+
+WHAT IT DOES:
+- Performs matrix multiplication followed by adding a bias
+- This is the fundamental operation in neural networks
+- '@' is Python's matrix multiplication operator
+
+DIMENSIONS:
+- x: [m, in] - m tokens, each with 'in' features
+- w: [in, out] - weight matrix
+- b: [out] - bias vector
+- output: [m, out] - m tokens, each with 'out' features
+
+EXAMPLE:
+- If x is [10, 768] (10 tokens with 768 dimensions)
+- And w is [768, 3072]
+- Output will be [10, 3072] (10 tokens with 3072 dimensions)
+
+WHY IT MATTERS:
+- This is how neural networks transform and combine information
+- The weights 'w' and biases 'b' were learned during training
+
+
+LINES 24-30: FEED-FORWARD NETWORK (FFN)
+----------------------------------------
+def ffn(x, c_fc, c_proj):  # [n_seq, n_embd] -> [n_seq, n_embd]
+    # project up
+    a = gelu(linear(x, **c_fc))  # [n_seq, n_embd] -> [n_seq, 4*n_embd]
+
+    # project back down
+    x = linear(a, **c_proj)  # [n_seq, 4*n_embd] -> [n_seq, n_embd]
+
+    return x
+
+WHAT IT DOES:
+- Two-layer neural network with GELU activation
+- First layer expands dimensions by 4x (project up)
+- Second layer projects back to original dimensions
+
+WHY THE EXPANSION?
+- Expanding to a larger space (4x) gives the model more "room to think"
+- The intermediate representation can capture more complex patterns
+- Then compress back down to maintain consistent dimensions
+
+ANALOGY:
+- Like "showing your work" in math - you expand into a larger workspace,
+  do complex calculations, then condense the answer back down
+
+DIMENSIONS EXAMPLE:
+- Input: [10, 768] - 10 tokens, 768 dimensions
+- After first linear + GELU: [10, 3072] - expanded by 4x
+- After second linear: [10, 768] - back to original size
+
+
+LINES 34-35: ATTENTION MECHANISM (Core of the Transformer!)
+------------------------------------------------------------
+def attention(q, k, v, mask):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] -> [n_q, d_v]
+    return softmax(q @ k.T / np.sqrt(q.shape[-1]) + mask) @ v
+
+WHAT IT DOES:
+- This is the CORE innovation of the Transformer architecture
+- Computes how much each word should "attend to" (focus on) other words
+- q, k, v stand for Query, Key, Value (concepts from information retrieval)
+
+THE ATTENTION FORMULA:
+1. q @ k.T: Compute similarity between queries and keys (dot product)
+2. / np.sqrt(q.shape[-1]): Scale down (prevents softmax saturation)
+3. + mask: Add mask to prevent attending to future words (causal attention)
+4. softmax(...): Convert similarities to probabilities (attention weights)
+5. @ v: Weight the values by the attention weights
+
+INTUITION:
+- Query: "What am I looking for?"
+- Key: "What do I contain?"
+- Value: "What do I actually communicate?"
+
+EXAMPLE:
+In the sentence "The cat sat on the mat", when processing "sat":
+- Query from "sat" asks: "What relates to this action?"
+- Keys from "cat" and "mat" say: "I'm a noun/subject" and "I'm a noun/object"
+- Attention weights determine: "cat" gets high attention (subject), "mat" gets some (location)
+- Values from those words contribute to the representation of "sat"
+
+THE MASK:
+- Prevents the model from "cheating" by looking at future words
+- During generation, we can only use past/current words, not future ones
+- Implemented as a triangular matrix of -1e10 (very negative, becomes ~0 after softmax)
+
+
+LINES 38-60: MULTI-HEAD ATTENTION (MHA)
+----------------------------------------
+def mha(x, c_attn, c_proj, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
+    # qkv projection
+    x = linear(x, **c_attn)  # [n_seq, n_embd] -> [n_seq, 3*n_embd]
+
+    # split into qkv
+    qkv = np.split(x, 3, axis=-1)  # [n_seq, 3*n_embd] -> [3, n_seq, n_embd]
+
+    # split into heads
+    qkv_heads = list(map(lambda x: np.split(x, n_head, axis=-1), qkv))  # [3, n_seq, n_embd] -> [3, n_head, n_seq, n_embd/n_head]
+
+    # causal mask to hide future inputs from being attended to
+    causal_mask = (1 - np.tri(x.shape[0], dtype=x.dtype)) * -1e10  # [n_seq, n_seq]
+
+    # perform attention over each head
+    out_heads = [attention(q, k, v, causal_mask) for q, k, v in zip(*qkv_heads)]  # [3, n_head, n_seq, n_embd/n_head] -> [n_head, n_seq, n_embd/n_head]
+
+    # merge heads
+    x = np.hstack(out_heads)  # [n_head, n_seq, n_embd/n_head] -> [n_seq, n_embd]
+
+    # out projection
+    x = linear(x, **c_proj)  # [n_seq, n_embd] -> [n_seq, n_embd]
+
+    return x
+
+WHAT IT DOES:
+- Runs multiple attention mechanisms in parallel ("heads")
+- Each head learns to focus on different aspects of the relationships
+- Like having multiple experts, each specializing in different patterns
+
+THE PROCESS:
+1. Project input to create Q, K, V for all heads at once
+2. Split into separate heads (e.g., 12 heads for GPT-2 124M)
+3. Run attention independently for each head
+4. Concatenate results from all heads
+5. Final projection to mix information from all heads
+
+WHY MULTIPLE HEADS?
+- Different heads can learn different types of relationships
+- One head might focus on syntactic relationships (subject-verb)
+- Another might focus on semantic relationships (antonyms, synonyms)
+- Another might focus on long-range dependencies
+- Parallel processing is also more efficient
+
+CAUSAL MASK DETAIL:
+- np.tri creates a lower triangular matrix (1s below diagonal, 0s above)
+- (1 - np.tri) flips it: 0s below diagonal, 1s above
+- Multiply by -1e10: 0s below (can attend), -1e10 above (can't attend to future)
+
+
+LINES 63-70: TRANSFORMER BLOCK
+-------------------------------
+def transformer_block(x, mlp, attn, ln_1, ln_2, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
+    # multi-head causal self attention
+    x = x + mha(layer_norm(x, **ln_1), **attn, n_head=n_head)  # [n_seq, n_embd] -> [n_seq, n_embd]
+
+    # position-wise feed forward network
+    x = x + ffn(layer_norm(x, **ln_2), **mlp)  # [n_seq, n_embd] -> [n_seq, n_embd]
+
+    return x
+
+WHAT IT DOES:
+- Combines attention and feed-forward network with residual connections
+- This is one "layer" of the Transformer
+- GPT-2 124M has 12 of these blocks stacked sequentially
+
+RESIDUAL CONNECTIONS (the '+ x' part):
+- Input is added back to the output: output = input + transformation(input)
+- Allows gradients to flow more easily during training
+- Prevents the "vanishing gradient" problem in deep networks
+- Like giving the network a "shortcut" to pass information through
+
+THE PATTERN (Post-LayerNorm):
+1. Normalize the input
+2. Apply multi-head attention
+3. Add back to original (residual connection)
+4. Normalize
+5. Apply feed-forward network
+6. Add back to original (residual connection)
+
+WHY THIS STRUCTURE?
+- Layer norm before each sub-layer stabilizes the input
+- Residual connections ensure information flows through the deep network
+- This pattern is repeated 12 times (for 124M model) or more for larger models
+
+
+LINES 73-83: THE MAIN GPT-2 MODEL
+----------------------------------
+def gpt2(inputs, wte, wpe, blocks, ln_f, n_head):  # [n_seq] -> [n_seq, n_vocab]
+    # token + positional embeddings
+    x = wte[inputs] + wpe[range(len(inputs))]  # [n_seq] -> [n_seq, n_embd]
+
+    # forward pass through n_layer transformer blocks
+    for block in blocks:
+        x = transformer_block(x, **block, n_head=n_head)  # [n_seq, n_embd] -> [n_seq, n_embd]
+
+    # projection to vocab
+    x = layer_norm(x, **ln_f)  # [n_seq, n_embd] -> [n_seq, n_embd]
+    return x @ wte.T  # [n_seq, n_embd] -> [n_seq, n_vocab]
+
+WHAT IT DOES:
+- This is the complete GPT-2 forward pass
+- Takes token IDs as input, outputs predictions for next token
+
+PARAMETERS:
+- inputs: List of token IDs (integers representing words/subwords)
+- wte: Word Token Embeddings - matrix mapping token IDs to vectors
+- wpe: Word Position Embeddings - matrix encoding position information
+- blocks: List of transformer blocks (12 for 124M model)
+- ln_f: Final layer normalization parameters
+- n_head: Number of attention heads (12 for 124M model)
+
+STEP-BY-STEP:
+1. EMBEDDING LAYER:
+   - wte[inputs]: Look up embeddings for each token
+   - wpe[range(len(inputs))]: Look up positional embeddings
+   - Add them together: Each token gets its meaning + position info
+   - Example: "cat" at position 3 = embedding("cat") + embedding(position_3)
+
+2. TRANSFORMER BLOCKS:
+   - Pass through 12 (or more) transformer blocks sequentially
+   - Each block refines the representation
+   - Early blocks learn simple patterns, later blocks learn complex ones
+
+3. FINAL LAYER NORM:
+   - Normalize the final hidden states
+
+4. OUTPUT PROJECTION:
+   - Multiply by wte.T (transpose of token embeddings)
+   - This projects back to vocabulary space
+   - Output: [n_seq, n_vocab] - for each position, a score for each possible next word
+   - Example: If vocab size is 50,257, each position gets 50,257 scores
+
+WHY MULTIPLY BY wte.T?
+- Weight tying: Uses same embedding matrix for input and output
+- Reduces parameters and works well in practice
+- Each output dimension represents similarity to a token embedding
+
+
+LINES 86-94: TEXT GENERATION LOOP
+----------------------------------
+def generate(inputs, params, n_head, n_tokens_to_generate):
+    from tqdm import tqdm
+
+    for _ in tqdm(range(n_tokens_to_generate), "generating"):  # auto-regressive decode loop
+        logits = gpt2(inputs, **params, n_head=n_head)  # model forward pass
+        next_id = np.argmax(logits[-1])  # greedy sampling
+        inputs.append(int(next_id))  # append prediction to input
+
+    return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
+
+WHAT IT DOES:
+- Generates new tokens one at a time (auto-regressive generation)
+- This is how GPT-2 creates text
+
+THE GENERATION PROCESS:
+1. Run GPT-2 on current sequence
+2. Get predictions for next token (logits for all tokens at all positions)
+3. Take the last position's predictions (logits[-1])
+4. Pick the most likely token (greedy sampling via argmax)
+5. Add that token to the sequence
+6. Repeat for n_tokens_to_generate times
+
+AUTO-REGRESSIVE:
+- Each prediction depends on all previous predictions
+- Like writing a sentence word by word, where each word depends on what came before
+
+GREEDY SAMPLING:
+- Always picks the most likely next token (argmax)
+- Simple but can be repetitive
+- Better methods: temperature sampling, top-k, top-p (not implemented here)
+
+RETURN VALUE:
+- Only returns the newly generated tokens
+- Excludes the original input tokens
+
+
+LINES 97-115: MAIN FUNCTION (Entry Point)
+------------------------------------------
+def main(prompt: str, n_tokens_to_generate: int = 40, model_size: str = "124M", models_dir: str = "models"):
+    from utils import load_encoder_hparams_and_params
+
+    # load encoder, hparams, and params from the released open-ai gpt-2 files
+    encoder, hparams, params = load_encoder_hparams_and_params(model_size, models_dir)
+
+    # encode the input string using the BPE tokenizer
+    input_ids = encoder.encode(prompt)
+
+    # make sure we are not surpassing the max sequence length of our model
+    assert len(input_ids) + n_tokens_to_generate < hparams["n_ctx"]
+
+    # generate output ids
+    output_ids = generate(input_ids, params, hparams["n_head"], n_tokens_to_generate)
+
+    # decode the ids back into a string
+    output_text = encoder.decode(output_ids)
+
+    return output_text
+
+WHAT IT DOES:
+- This is the main entry point when you run the script
+- Orchestrates the complete text generation pipeline
+
+STEP-BY-STEP EXECUTION:
+
+1. LOAD MODEL (line 101):
+   - Downloads model files from OpenAI if not present
+   - Loads the BPE tokenizer (encoder)
+   - Loads hyperparameters (n_head, n_layer, n_embd, etc.)
+   - Loads pretrained weights (params) from TensorFlow checkpoint
+
+2. TOKENIZE INPUT (line 104):
+   - Converts text prompt to token IDs
+   - Example: "Hello world" -> [15496, 995] (actual IDs vary)
+   - Uses Byte Pair Encoding (BPE) tokenization
+
+3. VALIDATE LENGTH (line 107):
+   - Ensures input + output won't exceed max context length
+   - GPT-2's max context (n_ctx) is 1024 tokens
+   - If you exceed this, the model can't process it
+
+4. GENERATE (line 110):
+   - Calls the generate function to create new tokens
+   - Adds tokens one by one to the input sequence
+
+5. DECODE (line 113):
+   - Converts token IDs back to text
+   - Example: [262, 749] -> " the cat"
+
+6. RETURN (line 115):
+   - Returns the generated text as a string
+
+
+LINES 118-120: COMMAND LINE INTERFACE
+--------------------------------------
+if __name__ == "__main__":
+    import fire
+    fire.Fire(main)
+
+WHAT IT DOES:
+- Uses the 'fire' library to automatically create a CLI
+- Allows calling main() from command line with arguments
+
+EXAMPLE USAGE:
+python gpt2.py "Once upon a time" --n_tokens_to_generate 50 --model_size "124M"
+
+THIS TRANSLATES TO:
+main(prompt="Once upon a time", n_tokens_to_generate=50, model_size="124M")
+
+
+===============================================================================
+                      UTILS.PY - MODEL LOADING
+===============================================================================
+
+OVERVIEW:
+---------
+utils.py handles downloading and loading the pretrained GPT-2 model from OpenAI.
+
+KEY FUNCTIONS:
+
+1. download_gpt2_files(model_size, model_dir) - Lines 13-41:
+   - Downloads 7 files from OpenAI's servers:
+     * checkpoint - TensorFlow checkpoint metadata
+     * encoder.json - Vocabulary (token to ID mapping)
+     * hparams.json - Hyperparameters (model configuration)
+     * model.ckpt.data-00000-of-00001 - Actual model weights
+     * model.ckpt.index - Index for the weights file
+     * model.ckpt.meta - Metadata about the model graph
+     * vocab.bpe - Byte pair encoding merge rules
+   - URL: https://openaipublic.blob.core.windows.net/gpt-2/models/{model_size}/{filename}
+
+2. load_gpt2_params_from_tf_ckpt(tf_ckpt_path, hparams) - Lines 44-65:
+   - Loads pretrained weights from TensorFlow checkpoint
+   - Organizes weights into a nested dictionary structure
+   - Weights include:
+     * Token embeddings (wte)
+     * Position embeddings (wpe)
+     * Transformer block weights (12 blocks for 124M)
+     * Layer norm parameters
+     * Attention weights (Q, K, V projections)
+     * Feed-forward network weights
+
+3. load_encoder_hparams_and_params(model_size, models_dir) - Lines 68-82:
+   - Main function that coordinates loading
+   - Returns:
+     * encoder: BPE tokenizer
+     * hparams: Hyperparameters dictionary
+     * params: Model weights dictionary
+
+HYPERPARAMETERS (for 124M model):
+- n_vocab: 50257 (vocabulary size)
+- n_ctx: 1024 (maximum context length)
+- n_embd: 768 (embedding dimension)
+- n_head: 12 (number of attention heads)
+- n_layer: 12 (number of transformer blocks)
+
+
+===============================================================================
+                      ENCODER.PY - TOKENIZATION
+===============================================================================
+
+OVERVIEW:
+---------
+Tokenization converts text to numbers (token IDs) and back.
+This file implements Byte Pair Encoding (BPE), the same tokenizer used by GPT-2.
+
+WHAT IS BPE?
+------------
+- Byte Pair Encoding is a compression algorithm adapted for NLP
+- It builds a vocabulary of subword units (not just whole words)
+- Balances between character-level and word-level tokenization
+
+ADVANTAGES OF BPE:
+- Handles unknown words by breaking them into known subwords
+- Common words stay as single tokens (efficient)
+- Rare words split into subword pieces (flexible)
+- Fixed vocabulary size (50,257 for GPT-2)
+
+EXAMPLE:
+"unhappiness" might be tokenized as: ["un", "happiness"] or ["unhappy", "ness"]
+"Hello" might be: ["Hello"] (single token)
+"Supercalifragilisticexpialidocious" would split into multiple subword tokens
+
+KEY FUNCTION:
+- Encoder.encode(text): text -> list of token IDs
+- Encoder.decode(ids): list of token IDs -> text
+
+
+===============================================================================
+                   COMPLETE GENERATION WALKTHROUGH
+===============================================================================
+
+Let's trace through a complete example:
+INPUT: "The cat"
+DESIRED OUTPUT: Generate 3 tokens
+
+STEP 1: TOKENIZATION
+--------------------
+- Input text: "The cat"
+- Tokenizer converts to IDs: [464, 3797]
+- 464 = "The"
+- 3797 = " cat" (note the space)
+
+STEP 2: INITIAL EMBEDDINGS
+---------------------------
+- Look up embeddings: wte[[464, 3797]]
+- Get vectors: [[e1_1, e1_2, ..., e1_768], [e2_1, e2_2, ..., e2_768]]
+- Add positional embeddings: wpe[[0, 1]]
+- Combined shape: [2, 768] (2 tokens, 768 dimensions)
+
+STEP 3: TRANSFORMER BLOCKS (x12)
+---------------------------------
+For each of 12 transformer blocks:
+  a) Layer norm the input
+  b) Multi-head attention (12 heads):
+     - Split into Q, K, V for each head
+     - Each head computes attention
+     - "The" attends to "The"
+     - "cat" attends to "The" and "cat"
+     - Merge heads
+  c) Add residual connection
+  d) Layer norm
+  e) Feed-forward network
+  f) Add residual connection
+
+Output shape: still [2, 768]
+
+STEP 4: FINAL PROJECTION
+-------------------------
+- Layer norm: [2, 768]
+- Multiply by wte.T: [2, 768] @ [768, 50257] = [2, 50257]
+- Result: [2, 50257] - for each position, scores for all 50,257 tokens
+
+STEP 5: FIRST GENERATION
+-------------------------
+- Take last position's scores: logits[1] = [50,257 scores]
+- Find highest score: argmax([score1, score2, ..., score50257])
+- Let's say it's token 373 (representing " sat")
+- Append to sequence: [464, 3797, 373]
+
+STEP 6: SECOND GENERATION
+--------------------------
+- Now input is: [464, 3797, 373] ("The cat sat")
+- Repeat entire process with 3 tokens
+- Get new prediction, maybe token 319 (" on")
+- Sequence: [464, 3797, 373, 319]
+
+STEP 7: THIRD GENERATION
+-------------------------
+- Input: [464, 3797, 373, 319] ("The cat sat on")
+- Generate maybe token 262 (" the")
+- Final sequence: [464, 3797, 373, 319, 262]
+
+STEP 8: DECODE
+--------------
+- New tokens: [373, 319, 262]
+- Decode: " sat on the"
+- Return this as the generated text
+
+FINAL OUTPUT: " sat on the"
+
+
+===============================================================================
+                          KEY CONCEPTS SUMMARY
+===============================================================================
+
+FOR PROGRAMMERS NEW TO ML:
+--------------------------
+
+1. EMBEDDINGS:
+   - Convert discrete tokens (integers) to continuous vectors (floats)
+   - Allows mathematical operations on words
+   - Similar words have similar vectors
+
+2. ATTENTION:
+   - Mechanism for words to "look at" and gather information from other words
+   - Query: what I'm looking for
+   - Key: what I contain
+   - Value: what I communicate
+   - Attention weights: how much to focus on each word
+
+3. MULTI-HEAD ATTENTION:
+   - Run multiple attention mechanisms in parallel
+   - Each head specializes in different patterns
+   - Increases model capacity and parallelism
+
+4. FEED-FORWARD NETWORK:
+   - Standard neural network: linear -> activation -> linear
+   - Processes each position independently
+   - Expands then compresses dimensions
+
+5. LAYER NORMALIZATION:
+   - Normalizes activations to mean=0, variance=1
+   - Stabilizes training and inference
+   - Applied before each sub-layer in GPT-2
+
+6. RESIDUAL CONNECTIONS:
+   - Add input to output: y = x + F(x)
+   - Helps gradients flow in deep networks
+   - Prevents degradation as depth increases
+
+7. TRANSFORMER BLOCK:
+   - Attention + FFN with residuals and layer norms
+   - GPT-2 stacks these blocks (12 for 124M model)
+   - Each block refines the representation
+
+8. AUTO-REGRESSIVE GENERATION:
+   - Generate one token at a time
+   - Each token depends on all previous tokens
+   - Feed outputs back as inputs iteratively
+
+9. CAUSAL MASKING:
+   - Prevent attending to future positions
+   - Ensures fair generation (no cheating)
+   - Uses triangular mask with -infinity values
+
+10. GREEDY SAMPLING:
+    - Always pick the most likely next token
+    - Simple but can be repetitive
+    - Alternative: temperature, top-k, top-p sampling
+
+
+===============================================================================
+                          IMPORTANT NOTES
+===============================================================================
+
+1. NO TRAINING CODE:
+   - This implementation only does INFERENCE (text generation)
+   - It uses PRETRAINED weights from OpenAI
+   - Training GPT-2 requires massive compute and data
+
+2. MODEL WEIGHTS:
+   - Downloaded from OpenAI's public repository
+   - These were trained by OpenAI on WebText dataset
+   - Training took weeks on powerful GPUs/TPUs
+
+3. LIMITATIONS:
+   - Greedy sampling only (no temperature, top-k, top-p)
+   - Single sequence at a time (no batching)
+   - Slow (pure NumPy, not optimized)
+   - Inference only (cannot fine-tune or train)
+
+4. MODEL SIZES:
+   - 124M: 12 layers, 12 heads, 768 dimensions
+   - 355M: 24 layers, 16 heads, 1024 dimensions
+   - 774M: 36 layers, 20 heads, 1280 dimensions
+   - 1558M: 48 layers, 25 heads, 1600 dimensions
+
+5. CONTEXT LENGTH:
+   - Maximum 1024 tokens (input + output)
+   - Exceeding this will cause errors
+   - This is a limitation of the pretrained model
+
+6. TOKENIZATION:
+   - Uses Byte Pair Encoding (BPE)
+   - Vocabulary of 50,257 tokens
+   - Same tokenizer as used by OpenAI
+
+
+===============================================================================
+                          FURTHER LEARNING
+===============================================================================
+
+To understand GPT-2 and Transformers better:
+- Original GPT-2 paper: "Language Models are Unsupervised Multitask Learners"
+- "Attention Is All You Need" paper (introduces Transformers)
+- Blog post: "GPT in 60 Lines of NumPy" by Jay Mody
+- The Illustrated Transformer by Jay Alammar
+- Stanford CS224N: Natural Language Processing with Deep Learning
+
+Key differences from other implementations:
+- No PyTorch/TensorFlow for the forward pass (pure NumPy)
+- Minimal code (prioritizes clarity over efficiency)
+- Inference only (no training code)
+- Uses pretrained OpenAI weights
+
+
+===============================================================================
+                              END OF DOCUMENTATION
+===============================================================================
